@@ -3,6 +3,11 @@ import { useState, useEffect } from "react";
 import { cn } from "~/lib/utils";
 import { UserRole } from "~/db/schema";
 import { UserAvatar } from "~/components/user-avatar";
+// PROTOTYPE — notification feed variants; remove with the prototype.
+import {
+  NotificationsSidebarHeaderSlot,
+  NotificationsSidebarNavSlot,
+} from "~/components/notifications-prototype/feed-variants";
 import {
   BookOpen,
   ChartColumn,
@@ -140,9 +145,11 @@ export function Sidebar({
         <NavLink to="/" className="text-lg font-bold tracking-tight">
           Cadence
         </NavLink>
+        <NotificationsSidebarHeaderSlot />
       </div>
 
       <nav className="flex-1 space-y-1 p-3">
+        <NotificationsSidebarNavSlot />
         {navItems
           .filter((item) => isVisible(item, currentUserRole))
           .map((item) => (
