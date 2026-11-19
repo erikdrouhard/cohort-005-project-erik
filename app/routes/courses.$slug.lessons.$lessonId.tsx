@@ -17,14 +17,12 @@ import {
 } from "~/components/comment-thread";
 import { db } from "~/db";
 import {
-  bookmarks,
   categories,
   comments,
   courses,
   lessonProgress,
   lessons,
   modules,
-  notes,
   quizzes,
   quizQuestions,
   quizOptions,
@@ -66,6 +64,14 @@ import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { COUNTRIES } from "~/lib/ppp";
 import { parseFormData, parseParams } from "~/lib/validation";
+import {
+  NOTE_MAX_LENGTH,
+  getNote,
+  isBookmarked,
+  lessonBelongsToCourse,
+  saveNote,
+  toggleBookmark,
+} from "~/lib/saved.server";
 
 const lessonParamsSchema = z.object({
   slug: z.string().min(1),
@@ -87,9 +93,6 @@ const editCommentSchema = z.object({
   commentId: z.coerce.number().int(),
   body: z.string(),
 });
-
-// A Note is capped at 2,000 characters, the same cap the spec sets.
-const NOTE_MAX_LENGTH = 2000;
 
 const saveNoteSchema = z.object({
   body: z.string().trim().max(NOTE_MAX_LENGTH),
@@ -284,62 +287,6 @@ function markLessonInProgress(userId: number, lessonId: number) {
     })
     .returning()
     .get();
-}
-
-function getBookmark(userId: number, lessonId: number) {
-  return db
-    .select()
-    .from(bookmarks)
-    .where(
-      and(eq(bookmarks.userId, userId), eq(bookmarks.lessonId, lessonId))
-    )
-    .get();
-}
-
-function toggleBookmark(userId: number, lessonId: number) {
-  const existing = getBookmark(userId, lessonId);
-
-  if (existing) {
-    db.delete(bookmarks).where(eq(bookmarks.id, existing.id)).run();
-    return false;
-  }
-
-  db.insert(bookmarks).values({ userId, lessonId }).run();
-  return true;
-}
-
-function getNote(userId: number, lessonId: number) {
-  return db
-    .select()
-    .from(notes)
-    .where(and(eq(notes.userId, userId), eq(notes.lessonId, lessonId)))
-    .get();
-}
-
-function saveNote(userId: number, lessonId: number, body: string) {
-  const existing = getNote(userId, lessonId);
-  const now = new Date().toISOString();
-
-  if (existing) {
-    return db
-      .update(notes)
-      .set({ body, updatedAt: now })
-      .where(eq(notes.id, existing.id))
-      .returning()
-      .get();
-  }
-
-  return db
-    .insert(notes)
-    .values({ userId, lessonId, body, createdAt: now, updatedAt: now })
-    .returning()
-    .get();
-}
-
-function deleteNote(userId: number, lessonId: number) {
-  db.delete(notes)
-    .where(and(eq(notes.userId, userId), eq(notes.lessonId, lessonId)))
-    .run();
 }
 
 function getLastWatchPosition(userId: number, lessonId: number) {
@@ -761,9 +708,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // The learner's own bookmark and note for this lesson. Both are per-learner,
   // so a signed-out visitor gets neither.
   const bookmarked = currentUserId
-    ? !!getBookmark(currentUserId, lessonId)
+    ? isBookmarked(db, currentUserId, lessonId)
     : false;
-  const note = currentUserId ? getNote(currentUserId, lessonId) : undefined;
+  const note = currentUserId ? getNote(db, currentUserId, lessonId) : undefined;
 
   // Render lesson content from Markdown to HTML server-side
   const contentHtml = lesson.content
@@ -860,9 +807,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     canModerate: access.isStaff,
     instructorName: instructor?.name ?? "your instructor",
     bookmarked,
-    note: note
-      ? { body: note.body, updatedAt: note.updatedAt }
-      : null,
+    note: note ? { body: note.body, updatedAt: note.updatedAt } : null,
   };
 }
 
@@ -965,15 +910,18 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "toggle-bookmark" || intent === "save-note") {
     await requireContentAccess(request, course.id);
 
-    const lesson = getLessonById(lessonId);
-    const lessonModule = lesson ? getModuleById(lesson.moduleId) : undefined;
-    if (!lessonModule || lessonModule.courseId !== course.id) {
+    if (!lessonBelongsToCourse(db, lessonId, course.id)) {
       throw data("Lesson not found in this course", { status: 404 });
     }
   }
 
   if (intent === "toggle-bookmark") {
-    const nowBookmarked = toggleBookmark(currentUserId, lessonId);
+    const nowBookmarked = toggleBookmark(
+      db,
+      currentUserId,
+      lessonId,
+      new Date()
+    );
     return { ok: true, bookmarked: nowBookmarked };
   }
 
@@ -987,13 +935,16 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
 
     // An empty box means the learner cleared their note.
-    if (parsed.data.body.length === 0) {
-      deleteNote(currentUserId, lessonId);
-      return { ok: true, noteDeleted: true };
-    }
-
-    saveNote(currentUserId, lessonId, parsed.data.body);
-    return { ok: true, noteSaved: true };
+    const outcome = saveNote(
+      db,
+      currentUserId,
+      lessonId,
+      parsed.data.body,
+      new Date()
+    );
+    return outcome === "deleted"
+      ? { ok: true, noteDeleted: true }
+      : { ok: true, noteSaved: true };
   }
 
   if (intent === "mark-complete") {

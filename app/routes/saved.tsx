@@ -1,56 +1,11 @@
 import { Link } from "react-router";
-import { desc, eq } from "drizzle-orm";
 import type { Route } from "./+types/saved";
 import { db } from "~/db";
-import { bookmarks, courses, lessons, modules, notes } from "~/db/schema";
+import { getBookmarksForUser, getNotesForUser } from "~/lib/saved.server";
 import { requireUserId } from "~/lib/access.server";
 import { Card, CardContent } from "~/components/ui/card";
 import { Bookmark, NotebookPen } from "lucide-react";
 import { formatRelativeTime } from "~/lib/utils";
-
-// Where a bookmarked or noted Lesson sits, for linking and labelling it.
-const lessonRefColumns = {
-  lessonId: lessons.id,
-  lessonTitle: lessons.title,
-  moduleTitle: modules.title,
-  courseTitle: courses.title,
-  courseSlug: courses.slug,
-};
-
-function getBookmarksForUser(userId: number) {
-  // Most recently bookmarked first.
-  return db
-    .select({
-      id: bookmarks.id,
-      createdAt: bookmarks.createdAt,
-      ...lessonRefColumns,
-    })
-    .from(bookmarks)
-    .innerJoin(lessons, eq(bookmarks.lessonId, lessons.id))
-    .innerJoin(modules, eq(lessons.moduleId, modules.id))
-    .innerJoin(courses, eq(modules.courseId, courses.id))
-    .where(eq(bookmarks.userId, userId))
-    .orderBy(desc(bookmarks.createdAt))
-    .all();
-}
-
-function getNotesForUser(userId: number) {
-  // Most recently edited first.
-  return db
-    .select({
-      id: notes.id,
-      body: notes.body,
-      updatedAt: notes.updatedAt,
-      ...lessonRefColumns,
-    })
-    .from(notes)
-    .innerJoin(lessons, eq(notes.lessonId, lessons.id))
-    .innerJoin(modules, eq(lessons.moduleId, modules.id))
-    .innerJoin(courses, eq(modules.courseId, courses.id))
-    .where(eq(notes.userId, userId))
-    .orderBy(desc(notes.updatedAt))
-    .all();
-}
 
 export function meta() {
   return [
@@ -62,8 +17,8 @@ export function meta() {
 export async function loader({ request }: Route.LoaderArgs) {
   const userId = await requireUserId(request);
 
-  const savedBookmarks = getBookmarksForUser(userId);
-  const savedNotes = getNotesForUser(userId);
+  const savedBookmarks = getBookmarksForUser(db, userId);
+  const savedNotes = getNotesForUser(db, userId);
 
   return { savedBookmarks, savedNotes };
 }
